@@ -1,7 +1,8 @@
 package main
 
 import (
-	"fmt"
+// 	"fmt",
+	"time"
 )
 
 // func main() {
@@ -36,7 +37,7 @@ import (
 
 func main() {
 	store := NewStore()
-	server := NewServer(store, "8080", 100) // Limit to 100 concurrent connections
+	server := NewServer(store, "8080", 1000, 10000, 5*time.Second)
 	err := server.Start()
 	if err != nil {
 		panic(err)

@@ -5,20 +5,24 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync"
+	"time"
 )
 
 type Server struct {
 	store      *Store
 	port       string
 	workerPool chan struct{}
+	maxQueue   int
+	timeout    time.Duration
 }
 
-func NewServer(store *Store, port string, maxWorkers int) *Server {
+func NewServer(store *Store, port string, maxWorkers, maxQueue int, timeout time.Duration) *Server {
 	return &Server{
 		store:      store,
 		port:       port,
 		workerPool: make(chan struct{}, maxWorkers),
+		maxQueue:   maxQueue,
+		timeout:    timeout,
 	}
 }
 
@@ -31,17 +35,39 @@ func (s *Server) Start() error {
 
 	fmt.Printf("Server listening on port %s\n", s.port)
 
+	queue := make(chan net.Conn, s.maxQueue)
+	go s.processQueue(queue)
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Printf("Error accepting connection: %v\n", err)
 			continue
 		}
-		s.workerPool <- struct{}{}
-		go func() {
-			s.handleConnection(conn)
-			<-s.workerPool
-		}()
+
+		select {
+		case queue <- conn:
+			// Connection added to queue
+		default:
+			// Queue is full, reject the connection
+			conn.Close()
+			fmt.Println("Connection rejected: queue full")
+		}
+	}
+}
+
+func (s *Server) processQueue(queue chan net.Conn) {
+	for conn := range queue {
+		select {
+		case s.workerPool <- struct{}{}:
+			go func(c net.Conn) {
+				s.handleConnection(c)
+				<-s.workerPool
+			}(conn)
+		case <-time.After(s.timeout):
+			conn.Close()
+			fmt.Println("Connection timeout: worker unavailable")
+		}
 	}
 }
 
