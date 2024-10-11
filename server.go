@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -72,45 +74,112 @@ func (s *Server) processQueue(queue chan net.Conn) {
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
-	scanner := bufio.NewScanner(conn)
+    defer conn.Close()
+    reader := bufio.NewReader(conn)
 
-	for scanner.Scan() {
-		command := scanner.Text()
-		response := s.executeCommand(command)
-		conn.Write([]byte(response + "\n"))
-	}
+    for {
+        command, err := readCommand(reader)
+        if err != nil {
+            if err != io.EOF {
+                fmt.Printf("Error reading command: %v\n", err)
+            }
+            return
+        }
+
+        response := s.executeCommand(command)
+        conn.Write([]byte(response))
+    }
 }
 
-func (s *Server) executeCommand(command string) string {
-	parts := strings.Fields(command)
-	if len(parts) == 0 {
-		return "ERROR: Empty command"
-	}
+func readCommand(reader *bufio.Reader) ([]string, error) {
+    // Read the first byte to determine the type of input
+    b, err := reader.ReadByte()
+    if err != nil {
+        return nil, err
+    }
 
-	switch strings.ToUpper(parts[0]) {
-	case "GET":
-		if len(parts) != 2 {
-			return "ERROR: GET command requires one key"
-		}
-		value, exists := s.store.Get(parts[1])
-		if !exists {
-			return "NOT FOUND"
-		}
-		return value
-	case "SET":
-		if len(parts) != 3 {
-			return "ERROR: SET command requires key and value"
-		}
-		s.store.Set(parts[1], parts[2])
-		return "OK"
-	case "DELETE":
-		if len(parts) != 2 {
-			return "ERROR: DELETE command requires one key"
-		}
-		s.store.Delete(parts[1])
-		return "OK"
-	default:
-		return "ERROR: Unknown command"
-	}
+    if b == '*' {
+        // RESP Array
+        return readRESPArray(reader)
+    } else {
+        // Inline command
+        reader.UnreadByte()
+        line, err := reader.ReadString('\n')
+        if err != nil {
+            return nil, err
+        }
+        return strings.Fields(strings.TrimSpace(line)), nil
+    }
+}
+
+func readRESPArray(reader *bufio.Reader) ([]string, error) {
+    countStr, err := reader.ReadString('\n')
+    if err != nil {
+        return nil, err
+    }
+    count, err := strconv.Atoi(strings.TrimSpace(countStr))
+    if err != nil {
+        return nil, err
+    }
+
+    command := make([]string, count)
+    for i := 0; i < count; i++ {
+        b, err := reader.ReadByte()
+        if err != nil {
+            return nil, err
+        }
+        if b != '$' {
+            return nil, fmt.Errorf("expected '$', got '%c'", b)
+        }
+
+        lengthStr, err := reader.ReadString('\n')
+        if err != nil {
+            return nil, err
+        }
+        length, err := strconv.Atoi(strings.TrimSpace(lengthStr))
+        if err != nil {
+            return nil, err
+        }
+
+        valueBytes := make([]byte, length+2) // +2 for \r\n
+        _, err = io.ReadFull(reader, valueBytes)
+        if err != nil {
+            return nil, err
+        }
+        command[i] = string(valueBytes[:length])
+    }
+
+    return command, nil
+}
+
+func (s *Server) executeCommand(command []string) string {
+    if len(command) == 0 {
+        return "-ERR empty command\r\n"
+    }
+
+    switch strings.ToUpper(command[0]) {
+    case "GET":
+        if len(command) != 2 {
+            return "-ERR wrong number of arguments for 'get' command\r\n"
+        }
+        value, exists := s.store.Get(command[1])
+        if !exists {
+            return "$-1\r\n"
+        }
+        return fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+    case "SET":
+        if len(command) != 3 {
+            return "-ERR wrong number of arguments for 'set' command\r\n"
+        }
+        s.store.Set(command[1], command[2])
+        return "+OK\r\n"
+    case "DEL":
+        if len(command) != 2 {
+            return "-ERR wrong number of arguments for 'del' command\r\n"
+        }
+        s.store.Delete(command[1])
+        return ":1\r\n"
+    default:
+        return "-ERR unknown command\r\n"
+    }
 }
