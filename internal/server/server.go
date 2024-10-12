@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bufio"
@@ -8,17 +8,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"github.com/saichander17/dashdata/internal/store"
 )
 
 type Server struct {
-	store      *Store
+	store      store.Store
 	port       string
 	workerPool chan struct{}
 	maxQueue   int
 	timeout    time.Duration
 }
 
-func NewServer(store *Store, port string, maxWorkers, maxQueue int, timeout time.Duration) *Server {
+func NewServer(store store.Store, port string, maxWorkers, maxQueue int, timeout time.Duration) *Server {
 	return &Server{
 		store:      store,
 		port:       port,
