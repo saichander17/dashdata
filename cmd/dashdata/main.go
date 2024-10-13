@@ -29,7 +29,7 @@ func main() {
 		dataStore = store.NewSimpleStore()
 	}
 
-	srv := server.NewServer(dataStore, fmt.Sprintf("%d", *port), 100, 1000, 5*time.Second)
+	srv := server.NewServer(dataStore, fmt.Sprintf("%d", *port), 1000, 10000, 5*time.Second)
 	log.Printf("Server starting on port %d", *port)
 	err := srv.Start()
 	if err != nil {
