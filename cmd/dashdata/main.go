@@ -64,7 +64,7 @@ func setupPersistence(config Config, store store.Store) (*persistence.Persister,
     store.SetWAL(wal)
 
     // Load data from disk
-    if err := persister.LoadFromDisk(); err != nil {
+    if err := persister.LoadFromDisk(wal); err != nil {
         log.Printf("Failed to load data from disk: %v", err)
     }
 

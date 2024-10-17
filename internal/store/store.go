@@ -10,3 +10,6 @@ type Store interface {
 	GetAll() map[string]string
 	SetWAL(wal *wal.WAL)
 }
+
+// Ensure that Store implements wal.StoreOperations
+var _ wal.StoreOperations = (Store)(nil)

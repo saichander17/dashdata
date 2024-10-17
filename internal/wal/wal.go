@@ -2,13 +2,27 @@ package wal
 
 import (
     "bufio"
+    "encoding/json"
     "fmt"
     "os"
+    "time"
 )
 
 type WAL struct {
     file *os.File
     writer *bufio.Writer
+}
+
+type LogEntry struct {
+    Timestamp  time.Time
+    Operation  string
+    Key        string
+    Value      string
+}
+
+type StoreOperations interface {
+    Set(key, value string)
+    Delete(key string)
 }
 
 func NewWAL(filename string) (*WAL, error) {
@@ -23,7 +37,17 @@ func NewWAL(filename string) (*WAL, error) {
 }
 
 func (w *WAL) Log(operation, key, value string) error {
-    _, err := w.writer.WriteString(fmt.Sprintf("%s %s %s\n", operation, key, value))
+    entry := LogEntry{
+        Timestamp: time.Now(),
+        Operation: operation,
+        Key:       key,
+        Value:     value,
+    }
+    data, err := json.Marshal(entry)
+    if err != nil {
+        return err
+    }
+    _, err = w.writer.WriteString(string(data) + "\n")
     if err != nil {
         return err
     }
@@ -32,4 +56,28 @@ func (w *WAL) Log(operation, key, value string) error {
 
 func (w *WAL) Close() error {
     return w.file.Close()
+}
+
+func (w *WAL) ApplyEntriesAfter(timestamp time.Time, store StoreOperations) error {
+    _, err := w.file.Seek(0, 0)
+    if err != nil {
+        return fmt.Errorf("failed to seek to beginning of WAL file: %v", err)
+    }
+
+    scanner := bufio.NewScanner(w.file)
+    for scanner.Scan() {
+        var entry LogEntry
+        if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+            return fmt.Errorf("failed to unmarshal log entry: %v", err)
+        }
+        if entry.Timestamp.After(timestamp) {
+            switch entry.Operation {
+            case "SET":
+                store.Set(entry.Key, entry.Value)
+            case "DELETE":
+                store.Delete(entry.Key)
+            }
+        }
+    }
+    return scanner.Err()
 }
