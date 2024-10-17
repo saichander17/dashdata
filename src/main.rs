@@ -1,17 +1,17 @@
 mod store;
 mod resp;
 
-use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::sync::Arc;
 use resp::RespValue;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(store::Store::new());
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
-    println!("Server listening on port 8080");
+    println!("Server listening on port 6379");
 
     loop {
         let (mut socket, _) = listener.accept().await?;
@@ -21,29 +21,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut buffer = Vec::new();
 
             loop {
-                let mut chunk = [0; 1024];
-                let n = match socket.read(&mut chunk).await {
-                    Ok(n) if n == 0 => return,
-                    Ok(n) => n,
-                    Err(_) => return,
-                };
-
-                buffer.extend_from_slice(&chunk[..n]);
-
-                match RespValue::parse(&buffer) {
-                    Ok(command) => {
-                        let response = handle_command(&store, command);
-                        if let Err(_) = socket.write_all(&response.serialize()).await {
-                            return;
-                        }
-                        buffer.clear();
+                let mut temp_buffer = [0; 1024];
+                match socket.read(&mut temp_buffer).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buffer.extend_from_slice(&temp_buffer[..n]);
+                        println!("Received: {:?}", String::from_utf8_lossy(&buffer));
                     },
-                    Err(parse_error) => {
-                        let error_response = RespValue::Error(format!("ERR parsing failed: {}", parse_error));
-                        if let Err(_) = socket.write_all(&error_response.serialize()).await {
-                            return;
+                    Err(e) => {
+                        eprintln!("Error reading from socket: {:?}", e);
+                        break;
+                    },
+                }
+
+                while !buffer.is_empty() {
+                    match RespValue::parse(&buffer) {
+                        Ok((value, consumed)) => {
+                            buffer.drain(..consumed);
+                            let response = handle_command(value, &store);
+                            let serialized = response.serialize();
+                            println!("Sending response: {:?}", String::from_utf8_lossy(&serialized));
+                            if let Err(e) = socket.write_all(&serialized).await {
+                                eprintln!("Error writing to socket: {:?}", e);
+                                break;
+                            }
                         }
-                        buffer.clear();
+                        Err(e) => {
+                            eprintln!("Error parsing RESP: {:?}", e);
+                            break;
+                        },
                     }
                 }
             }
@@ -51,43 +57,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn handle_command(store: &Arc<store::Store>, command: RespValue) -> RespValue {
+fn handle_command(command: RespValue, store: &store::Store) -> RespValue {
     match command {
-        RespValue::Array(args) => {
-            if let Some(RespValue::BulkString(cmd)) = args.get(0) {
-                match cmd.to_uppercase().as_str() {
-                    "GET" => {
-                        if let Some(RespValue::BulkString(key)) = args.get(1) {
-                            match store.get(key) {
-                                Some(value) => RespValue::BulkString(value),
-                                None => RespValue::Null,
-                            }
-                        } else {
-                            RespValue::Error("ERR wrong number of arguments for 'get' command".to_string())
-                        }
-                    },
-                    "SET" => {
-                        if let (Some(RespValue::BulkString(key)), Some(RespValue::BulkString(value))) = (args.get(1), args.get(2)) {
-                            store.set(key.clone(), value.clone());
-                            RespValue::SimpleString("OK".to_string())
-                        } else {
-                            RespValue::Error("ERR wrong number of arguments for 'set' command".to_string())
-                        }
-                    },
-                    "DEL" => {
-                        if let Some(RespValue::BulkString(key)) = args.get(1) {
-                            store.delete(key);
-                            RespValue::SimpleString("OK".to_string())
-                        } else {
-                            RespValue::Error("ERR wrong number of arguments for 'del' command".to_string())
-                        }
-                    },
-                    _ => RespValue::Error("ERR unknown command".to_string()),
-                }
-            } else {
-                RespValue::Error("ERR invalid command".to_string())
+        RespValue::Array(parts) => {
+            if parts.len() < 1 {
+                return RespValue::Error("Invalid command".to_string());
             }
-        },
-        _ => RespValue::Error("ERR invalid command".to_string()),
+            match parts[0] {
+                RespValue::BulkString(Some(ref cmd)) if cmd == b"GET" => {
+                    if let RespValue::BulkString(Some(key)) = &parts[1] {
+                        match store.get(&String::from_utf8_lossy(key)) {
+                            Some(value) => RespValue::BulkString(Some(value.into_bytes())),
+                            None => RespValue::BulkString(None),
+                        }
+                    } else {
+                        RespValue::Error("Invalid GET command".to_string())
+                    }
+                }
+                RespValue::BulkString(Some(ref cmd)) if cmd == b"SET" => {
+                    if let (RespValue::BulkString(Some(key)), RespValue::BulkString(Some(value))) = (&parts[1], &parts[2]) {
+                        store.set(String::from_utf8_lossy(key).to_string(), String::from_utf8_lossy(value).to_string());
+                        RespValue::SimpleString("OK".to_string())
+                    } else {
+                        RespValue::Error("Invalid SET command".to_string())
+                    }
+                }
+                RespValue::BulkString(Some(ref cmd)) if cmd == b"DEL" => {
+                    if let RespValue::BulkString(Some(key)) = &parts[1] {
+                        store.delete(&String::from_utf8_lossy(key));
+                        RespValue::SimpleString("OK".to_string())
+                    } else {
+                        RespValue::Error("Invalid DEL command".to_string())
+                    }
+                }
+                _ => RespValue::Error("Unknown command".to_string()),
+            }
+        }
+        _ => RespValue::Error("Invalid command format".to_string()),
     }
 }
