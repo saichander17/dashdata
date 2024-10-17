@@ -9,7 +9,7 @@ use resp::RespValue;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(store::Store::new());
-    let listener = TcpListener::bind("127.0.0.1:6379").await?;
+    let listener = TcpListener::bind("0.0.0.0:6379").await?;
 
     println!("Server listening on port 6379");
 
@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(0) => break,
                     Ok(n) => {
                         buffer.extend_from_slice(&temp_buffer[..n]);
-                        println!("Received: {:?}", String::from_utf8_lossy(&buffer));
+                        // println!("Received: {:?}", String::from_utf8_lossy(&buffer));
                     },
                     Err(e) => {
                         eprintln!("Error reading from socket: {:?}", e);
@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             buffer.drain(..consumed);
                             let response = handle_command(value, &store);
                             let serialized = response.serialize();
-                            println!("Sending response: {:?}", String::from_utf8_lossy(&serialized));
+                            // println!("Sending response: {:?}", String::from_utf8_lossy(&serialized));
                             if let Err(e) = socket.write_all(&serialized).await {
                                 eprintln!("Error writing to socket: {:?}", e);
                                 break;
