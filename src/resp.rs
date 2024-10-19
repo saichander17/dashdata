@@ -1,4 +1,5 @@
 use std::io::{Error, ErrorKind};
+use log::{error, debug};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RespValue {
@@ -19,6 +20,7 @@ impl RespValue {
                 let mut result = format!("${}\r\n", data.len()).into_bytes();
                 result.extend(data);
                 result.extend(b"\r\n");
+                debug!("Serialized RESP value: {:?}", String::from_utf8_lossy(&result));
                 result
             }
             RespValue::BulkString(None) => b"$-1\r\n".to_vec(),
@@ -44,6 +46,7 @@ impl RespValue {
                     values.push(value);
                     pos += consumed;
                 }
+                debug!("Parsed RESP value: {:?}", RespValue::Array(values.clone()));
                 Ok((RespValue::Array(values), pos))
             },
             Some(b'$') => {
@@ -76,7 +79,10 @@ fn parse_integer(input: &[u8]) -> Result<i64, Error> {
         .map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8 in integer"))?;
     let unescaped = unescape(num_str.trim());
     unescaped.parse::<i64>()
-        .map_err(|e| Error::new(ErrorKind::InvalidData, format!("Invalid integer: {}", e)))
+        .map_err(|e| {
+            error!("Error parsing integer: {}", e);
+            Error::new(ErrorKind::InvalidData, format!("Invalid integer: {}", e))
+        })
 }
 
 fn find_crlf(input: &[u8]) -> Result<usize, Error> {

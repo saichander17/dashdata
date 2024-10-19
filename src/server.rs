@@ -5,10 +5,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Semaphore, mpsc};
 use tokio::time::{timeout, Duration};
 use std::sync::Arc;
+use log::{info, warn, error, debug};
 
-const MAX_CONNECTIONS: usize = 500;
+const MAX_CONNECTIONS: usize = 1000;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
-const QUEUE_CAPACITY: usize = 1000;
+const QUEUE_CAPACITY: usize = 10000;
 
 pub struct Server {
     store: Arc<Store>,
@@ -30,18 +31,20 @@ impl Server {
         tokio::spawn(async move {
             Server::process_queue(store_clone, sem_clone, rx).await;
         });
+        info!("Server initialized with {} max connections", MAX_CONNECTIONS);
 
         server
     }
 
     pub async fn run(&self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(addr).await?;
-        println!("Server listening on {}", addr);
+        info!("Server listening on {}", addr);
 
         loop {
             let (socket, _) = listener.accept().await?;
+            debug!("New connection accepted");
             if let Err(_) = self.connection_queue.send(socket).await {
-                eprintln!("Connection queue full, rejecting connection");
+                error!("Connection queue full, rejecting connection");
             }
         }
     }
@@ -51,7 +54,9 @@ impl Server {
         sem: Arc<Semaphore>,
         mut rx: mpsc::Receiver<tokio::net::TcpStream>
     ) {
+        debug!("Starting to process connection queue");
         while let Some(socket) = rx.recv().await {
+            debug!("Processing new connection from queue");
             let store = Arc::clone(&store);
             let sem = Arc::clone(&sem);
 
@@ -62,11 +67,12 @@ impl Server {
                         drop(permit);
                     },
                     _ => {
+                        warn!("Connection timed out while waiting for processing");
                         let error_response = RespValue::Error("Server is busy. Try again later.".to_string());
                         if let Err(e) = socket.writable().await.and_then(|_| {
                             socket.try_write(&error_response.serialize())
                         }) {
-                            eprintln!("Failed to send error response: {:?}", e);
+                            error!("Failed to send error response: {:?}", e);
                         }
                     }
                 }
@@ -75,6 +81,7 @@ impl Server {
     }
 
     async fn handle_connection(mut socket: tokio::net::TcpStream, store: Arc<Store>) {
+        debug!("Handling new connection");
         let mut buffer = Vec::new();
 
         loop {
@@ -83,10 +90,10 @@ impl Server {
                 Ok(0) => break,
                 Ok(n) => {
                     buffer.extend_from_slice(&temp_buffer[..n]);
-                    println!("Received: {:?}", String::from_utf8_lossy(&buffer));
+                    debug!("Received data: {:?}", String::from_utf8_lossy(&buffer));
                 },
                 Err(e) => {
-                    eprintln!("Error reading from socket: {:?}", e);
+                    error!("Error reading from socket: {:?}", e);
                     break;
                 },
             }
@@ -97,14 +104,14 @@ impl Server {
                         buffer.drain(..consumed);
                         let response = Self::handle_command(value, &store);
                         let serialized = response.serialize();
-                        println!("Sending response: {:?}", String::from_utf8_lossy(&serialized));
+                        debug!("Sent response: {:?}", String::from_utf8_lossy(&serialized));
                         if let Err(e) = socket.write_all(&serialized).await {
-                            eprintln!("Error writing to socket: {:?}", e);
+                            error!("Error writing to socket: {:?}", e);
                             break;
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error parsing RESP: {:?}", e);
+                        error!("Error parsing RESP: {:?}", e);
                         break;
                     },
                 }

@@ -5,6 +5,7 @@ mod server;
 use std::sync::Arc;
 use server::Server;
 use clap::Parser;
+use log::{info, error};
 
 #[derive(Parser)]
 #[clap(name = "Dashdata Server")]
@@ -15,11 +16,16 @@ struct Opts {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let opts = Opts::parse();
     let store = Arc::new(store::Store::new());
     let server = Server::new(store);
 
-    server.run(&opts.bind_address).await?;
+//     server.run(&opts.bind_address).await?;
+    match server.run(&opts.bind_address).await {
+        Ok(_) => info!("Server shutdown gracefully"),
+        Err(e) => error!("Server error: {}", e),
+    }
 
     Ok(())
 }
